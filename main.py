@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Header, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from mailjet_rest import Client
 
 app = FastAPI(
     title="QueueIQ API",
@@ -33,6 +34,45 @@ ADMIN_SECRET = os.getenv("QUEUE_ADMIN_SECRET", "stripe_hackathon_2026")
 SECONDS_PER_POSITION = int(os.getenv("SECONDS_PER_POSITION", "120"))
 MAX_QUEUE_CAPACITY = int(os.getenv("MAX_QUEUE_CAPACITY", "10000"))
 
+# --- Mailjet Config ---
+MJ_API_KEY = "0e22796462945ca30bb1d30c149c9dbd"
+MJ_SECRET_KEY = "f847341536111c27233d1283e8f79fc3"
+SENDER_EMAIL = "farzayb@gmail.com"  # must match your Mailjet signup email
+
+
+# --- Email Helper ---
+def send_admission_email(to_email: str, user_name: str, event_name: str, ticket_id: str):
+    try:
+        mailjet = Client(auth=(MJ_API_KEY, MJ_SECRET_KEY), version='v3.1')
+        data = {
+            'Messages': [
+                {
+                    "From": {
+                        "Email": SENDER_EMAIL,
+                        "Name": "QueueIQ"
+                    },
+                    "To": [
+                        {
+                            "Email": to_email,
+                            "Name": user_name
+                        }
+                    ],
+                    "Subject": f"You're in! Access granted for {event_name}",
+                    "TextPart": f"Hey {user_name}, your ticket {ticket_id} has been admitted. Complete your purchase in the next 10 minutes before your spot expires!",
+                    "HTMLPart": f"""
+                    <h2>You're in, {user_name}! 🎉</h2>
+                    <p>Your ticket <strong>{ticket_id}</strong> has been admitted to <strong>{event_name}</strong>.</p>
+                    <p>Complete your purchase in the next <strong>10 minutes</strong> before your spot expires.</p>
+                    <br>
+                    <p>— QueueIQ</p>
+                    """
+                }
+            ]
+        }
+        mailjet.send.create(data=data)
+    except Exception as e:
+        print(f"Email failed to send: {e}")
+
 
 class CreateEventRequest(BaseModel):
     event_name: str = Field(..., min_length=1, max_length=100, description="Unique slug for the event")
@@ -54,6 +94,7 @@ class CreateEventRequest(BaseModel):
 class JoinRequest(BaseModel):
     user_identifier: str = Field(..., min_length=1, max_length=255, description="Opaque user ID or email")
     event_name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., description="Email address to notify when admitted")
     metadata: Optional[dict] = Field(None, description="Arbitrary key-value pairs, e.g. locale or referral source")
 
 
@@ -84,7 +125,6 @@ def get_event_or_404(event_name: str) -> dict:
 
 
 def compute_position(event_name: str, ticket_id: str) -> tuple[int, int]:
-    """Returns (position_in_line, people_ahead). O(n) — fine for a demo, use Redis ZRANK in prod."""
     lst = list(events[event_name]["queue"])
     try:
         idx = lst.index(ticket_id)
@@ -137,7 +177,6 @@ def create_event(
     body: CreateEventRequest,
     x_admin_secret: Optional[str] = Header(default=None),
 ):
-    """Create a new waiting-room event. Every queue belongs to one event."""
     require_admin(x_admin_secret)
 
     if body.event_name in events:
@@ -167,7 +206,6 @@ def list_events(
     status: Optional[str] = Query(None, description="Filter by status: open | closed"),
     x_admin_secret: Optional[str] = Header(default=None),
 ):
-    """List all events. Admin only."""
     require_admin(x_admin_secret)
 
     result = []
@@ -182,7 +220,6 @@ def list_events(
 
 @app.get("/events/{event_name}", tags=["Events"])
 def get_event(event_name: str):
-    """Public stats for a single event — no auth needed."""
     get_event_or_404(event_name)
     return _event_summary(event_name)
 
@@ -192,10 +229,6 @@ def close_event(
     event_name: str,
     x_admin_secret: Optional[str] = Header(default=None),
 ):
-    """
-    Close an event. All remaining waiting tickets get marked expired.
-    Already-admitted tickets are untouched.
-    """
     require_admin(x_admin_secret)
     get_event_or_404(event_name)
 
@@ -218,12 +251,6 @@ def close_event(
 
 @app.post("/queue/join", status_code=201, tags=["Queue"])
 def join_queue(body: JoinRequest):
-    """
-    Put a user in line for an event.
-
-    Idempotent: if the same user_identifier is already waiting for this event,
-    we return their existing ticket (HTTP 200) instead of creating a duplicate.
-    """
     event = get_event_or_404(body.event_name)
 
     if event["status"] == "closed":
@@ -235,7 +262,6 @@ def join_queue(body: JoinRequest):
     if len(event["queue"]) >= MAX_QUEUE_CAPACITY:
         raise HTTPException(status_code=503, detail="Queue is at maximum capacity. Try again later.")
 
-    # if this user is already in line, hand back their existing ticket
     for tid in event["queue"]:
         if tickets[tid]["user_identifier"] == body.user_identifier:
             position_in_line, people_ahead = compute_position(body.event_name, tid)
@@ -257,6 +283,7 @@ def join_queue(body: JoinRequest):
         "ticket_id": ticket_id,
         "user_identifier": body.user_identifier,
         "event_name": body.event_name,
+        "email": body.email,
         "status": "waiting",
         "metadata": body.metadata or {},
         "joined_at": now_iso(),
@@ -283,14 +310,6 @@ def join_queue(body: JoinRequest):
 
 @app.get("/queue/status/{ticket_id}", tags=["Queue"])
 def get_status(ticket_id: str):
-    """
-    Check where a ticket stands. Poll this every few seconds on the client side.
-
-    Statuses:
-    - waiting   — still in line, includes current position and wait estimate
-    - admitted  — let the user through
-    - expired   — event closed before they were reached
-    """
     if ticket_id not in tickets:
         raise HTTPException(
             status_code=404,
@@ -343,10 +362,6 @@ def get_status(ticket_id: str):
 
 @app.post("/queue/leave", status_code=200, tags=["Queue"])
 def leave_queue(body: LeaveRequest):
-    """
-    Leave the queue voluntarily. Safe to call multiple times — if the ticket
-    is already admitted or expired, nothing changes and we just tell you that.
-    """
     if body.ticket_id not in tickets:
         raise HTTPException(status_code=404, detail="Ticket not found.")
 
@@ -379,12 +394,6 @@ def admit_users(
     body: AdmitRequest,
     x_admin_secret: Optional[str] = Header(default=None),
 ):
-    """
-    Admit the next N users from the front of the line.
-
-    Call this when your downstream server signals it has room. If the queue
-    is shorter than N, we admit whoever's left and return without error.
-    """
     require_admin(x_admin_secret)
     event = get_event_or_404(body.event_name)
 
@@ -398,6 +407,14 @@ def admit_users(
         tickets[tid]["status"] = "admitted"
         tickets[tid]["admitted_at"] = ts
         admitted.append(tid)
+
+        # Send admission email
+        send_admission_email(
+            to_email=tickets[tid]["email"],
+            user_name=tickets[tid]["user_identifier"],
+            event_name=body.event_name,
+            ticket_id=tid
+        )
 
     event["total_admitted"] += len(admitted)
 
@@ -417,7 +434,6 @@ def peek_queue(
     limit: int = Query(10, ge=1, le=100, description="How many tickets to preview from the front"),
     x_admin_secret: Optional[str] = Header(default=None),
 ):
-    """Preview the next N tickets without admitting anyone. Good for dashboards."""
     require_admin(x_admin_secret)
     event = get_event_or_404(event_name)
 
