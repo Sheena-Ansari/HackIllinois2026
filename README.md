@@ -9,12 +9,11 @@ A lot of systems break when traffic spikes. Instead of handling overload poorly,
 This is infrastructure. It is meant to plug into other apps.
 
 Tech Stack
-We chose tools that make sense for correctness and performance:
 * FastAPI for async performance and automatic API docs at `/docs`
 * Pydantic v2 for strict input validation
 * collections.deque for O(1) queue operations
 * In memory state for hackathon simplicity
-In production, this would use Redis so the queue survives restarts and scales across instances.
+* Mailjet for real-time email notifs when users are admitted
 
 How it works
 1. An admin creates an event. Example: `jordan-drop-2026`
