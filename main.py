@@ -1,5 +1,5 @@
 """
-QueueIQ — Virtual Waiting Room API
+QueuePass — Virtual Waiting Room API
 """
 
 import uuid
@@ -14,13 +14,13 @@ from pydantic import BaseModel, Field, field_validator
 from mailjet_rest import Client
 
 app = FastAPI(
-    title="QueueIQ API",
+    title="QueuePass API",
     description=(
         "Virtual waiting room infrastructure. Drop this in front of any high-traffic event "
         "— drops, registrations, ticket sales — and your server stops getting crushed."
     ),
     version="1.1.0",
-    contact={"name": "QueueIQ Team", "email": "team@queueiq.dev"},
+    contact={"name": "QueuePass Team", "email": "team@QueuePass.dev"},
     license_info={"name": "MIT"},
 )
 
@@ -49,7 +49,7 @@ def send_admission_email(to_email: str, user_name: str, event_name: str, ticket_
                 {
                     "From": {
                         "Email": SENDER_EMAIL,
-                        "Name": "QueueIQ"
+                        "Name": "QueuePass"
                     },
                     "To": [
                         {
@@ -64,7 +64,7 @@ def send_admission_email(to_email: str, user_name: str, event_name: str, ticket_
                     <p>Your ticket <strong>{ticket_id}</strong> has been admitted to <strong>{event_name}</strong>.</p>
                     <p>Complete your purchase in the next <strong>10 minutes</strong> before your spot expires.</p>
                     <br>
-                    <p>— QueueIQ</p>
+                    <p>— QueuePass</p>
                     """
                 }
             ]
@@ -153,7 +153,7 @@ def _event_summary(name: str) -> dict:
 @app.get("/", tags=["Meta"])
 def root():
     return {
-        "service": "QueueIQ API",
+        "service": "QueuePass API",
         "version": "1.1.0",
         "docs": "/docs",
         "health": "/health",
