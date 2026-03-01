@@ -1,172 +1,164 @@
-QueueIQ
+# QueuePass — Virtual Waiting Room API
 
-A virtual waiting room API. When too many people hit your server at once — sneaker drop, concert tickets, course registration — instead of crashing, you put them in a queue.
-Your app calls our API to issue tickets, check positions, and admit users when you're ready. No frontend. Just the queue logic.
+QueuePass stops your server from crashing during high-traffic events like sneaker drops, ticket sales, or product launches. Instead of everyone hitting your server at once, users are placed in a fair virtual queue and admitted in controlled batches.
 
-Stack
+---
 
-FastAPI — async, auto-generates interactive docs at /docs
-Pydantic v2 — strict input validation
-collections.deque — O(1) queue operations. list.pop(0) is O(n), which is the wrong data structure for a queue
-Mailjet — emails users when they get admitted
-In-memory state — fine for a hackathon, Redis in prod
+## Tech Stack
 
+| Tool | Why we used it |
+|---|---|
+| **FastAPI** | Fast, async Python framework — automatically generates interactive API docs at `/docs` |
+| **Pydantic v2** | Validates all request and response data automatically |
+| **collections.deque** | Built-in Python queue — O(1) performance for adding/removing users |
+| **In-memory storage** | Simple, no database setup needed (note: data clears on restart) |
+| **Mailjet** | Sends an email to users the moment they're admitted |
 
-Quickstart
-bashpip install fastapi uvicorn pydantic mailjet-rest
+---
+
+## Setup & Running the API
+
+**1. Install dependencies**
+
+```bash
+pip install fastapi uvicorn pydantic mailjet_rest
+```
+
+**2. Set environment variables**
+
+```bash
+export QUEUE_ADMIN_SECRET="stripe_hackathon_2026"   # default if not set
+export SECONDS_PER_POSITION=120                      # used to estimate wait time
+export MAX_QUEUE_CAPACITY=10000                      # max users per queue
+
+export MJ_API_KEY="your_mailjet_key"                 # required for email notifications
+export MJ_SECRET_KEY="your_mailjet_secret"
+export SENDER_EMAIL="you@yourdomain.com"
+```
+
+**3. Start the server**
+
+```bash
 uvicorn main:app --reload
-Then go to http://127.0.0.1:8000/docs — FastAPI generates a full interactive UI where you can test every endpoint.
-Environment variables (all have defaults, none are required to get started):
-bashexport QUEUE_ADMIN_SECRET="your_secret"
-export SECONDS_PER_POSITION="120"
-export MAX_QUEUE_CAPACITY="10000"
-export ADMISSION_WINDOW_SECONDS="120"   # how long admitted users have to act
-export MJ_API_KEY="..."
-export MJ_SECRET_KEY="..."
-export SENDER_EMAIL="..."
+```
 
-How it works
+**4. Open the interactive docs**
 
-Admin creates an event — e.g. jordan-drop-2026
-Users join and get a ticket_id and their position
-Users poll /queue/status to see where they're at
-Admin calls /queue/admit when the server has room
-Admitted users get an email with a deadline — they have 2 minutes to act
-If they don't, /queue/expire-stale releases their spot to the next person
-Admin can pause and resume the event without losing the queue
+```
+http://127.0.0.1:8000/docs
+```
 
+The docs let you read every endpoint, see exactly what to send, and test live requests in your browser — no extra tools needed.
 
-Endpoints
-Admin endpoints need X-Admin-Secret: <your_secret> in the header.
+---
 
-Meta
-GET / — service info
-GET /health — live stats across all events
+## How to Use the API
 
-Events
-POST /events 🔒 — create an event
-bashcurl -s -X POST http://localhost:8000/events \
+There are two roles: **Admin** and **User**. Here's the typical flow:
+
+### Step 1 — Admin creates an event
+
+```bash
+curl -X POST http://127.0.0.1:8000/events \
   -H "Content-Type: application/json" \
   -H "X-Admin-Secret: stripe_hackathon_2026" \
-  -d '{
-    "event_name": "jordan-drop-2026",
-    "description": "AJ1 Retro drop",
-    "capacity_hint": 500,
-    "admission_window_seconds": 120
-  }' | jq
-admission_window_seconds is per-event. A flash sale might give 2 minutes, a class registration might give an hour.
-GET /events 🔒 — list all events. Filter with ?status=open, ?status=paused, or ?status=closed
-GET /events/{event_name} — public stats, no auth needed
-GET /events/{event_name}/stats 🔒 — average wait time, longest wait, ticket breakdown, how many spots were lost to inaction
-POST /events/{event_name}/pause 🔒 — pause admissions without killing the queue. Users can still join and hold their spot.
-POST /events/{event_name}/resume 🔒 — unpause
-DELETE /events/{event_name} 🔒 — close permanently. Everyone still waiting gets expired.
+  -d '{"event_name": "jordan-drop-2026", "description": "Limited release", "capacity_hint": 500}'
+```
 
-Tickets
-GET /tickets/{ticket_id} 🔒 — full ticket info: user, email, metadata, all timestamps, live position if still waiting, countdown if admitted
+### Step 2 — User joins the queue
 
-Queue
-POST /queue/join — join the queue
-bashcurl -s -X POST http://localhost:8000/queue/join \
+```bash
+curl -X POST http://127.0.0.1:8000/queue/join \
   -H "Content-Type: application/json" \
-  -d '{
-    "user_identifier": "alice",
-    "event_name": "jordan-drop-2026",
-    "email": "alice@example.com",
-    "metadata": {"source": "mobile", "locale": "en-US"}
-  }' | jq
-Idempotent: if the same user calls join twice, they get their existing ticket back (HTTP 200, not 201). If the event is paused they can still join, a note field tells them admissions are on hold.
-GET /queue/status/{ticket_id}:  check where a ticket stands
-StatusMeaningwaitingStill in line. Returns live position, wait estimate, and a note if paused.admittedLet them through. Returns admission_expires_at and seconds remaining.expiredIncludes expire_reason — event_closed, admission_window_elapsed, or left_voluntarily.
-POST /queue/leave: leave voluntarily. Safe to call multiple times.
+  -d '{"user_identifier": "sheena123", "event_name": "jordan-drop-2026", "email": "user@example.com"}'
+```
 
-Admin
-POST /queue/admit 🔒 — admit the next N users
-bashcurl -s -X POST http://localhost:8000/queue/admit \
+The response tells them their position and estimated wait:
+
+```json
+{
+  "ticket_id": "tkt_ab12cd34ef56",
+  "position_in_line": 42,
+  "people_ahead_of_you": 41,
+  "estimated_wait_seconds": 4920,
+  "status": "waiting"
+}
+```
+
+> Save the `ticket_id` — you'll need it to check status. If a user calls this endpoint again, they'll get their existing ticket back instead of a duplicate spot.
+
+### Step 3 — User checks their status
+
+```bash
+curl http://127.0.0.1:8000/queue/status/tkt_ab12cd34ef56
+```
+
+### Step 4 — Admin admits users
+
+```bash
+curl -X POST http://127.0.0.1:8000/queue/admit \
   -H "Content-Type: application/json" \
   -H "X-Admin-Secret: stripe_hackathon_2026" \
-  -d '{"event_name": "jordan-drop-2026", "number_to_admit": 5}' | jq
-Blocked with a 409 if the event is paused. Returns admission_expires_at so you know when spots get released if nobody acts. Each admitted user gets an email.
-POST /queue/expire-stale 🔒 — release spots from admitted users who didn't act in time
-bashcurl -s -X POST \
-  "http://localhost:8000/queue/expire-stale?event_name=jordan-drop-2026" \
-  -H "X-Admin-Secret: stripe_hackathon_2026" | jq
-In production this would run on a cron every minute. Here it's a manual endpoint so you can trigger and watch it happen.
-GET /queue/peek/{event_name} 🔒 — see who's at the front of the line without admitting anyone
+  -d '{"event_name": "jordan-drop-2026", "number_to_admit": 10}'
+```
 
-Error codes
-* CodeWhen200OK, or idempotent join201Created400Bad input401Wrong or missing admin secret404Ticket or event not found409Event already exists, already paused, or admitting from a paused/closed event410Event is closed, no new joins503Queue is full
-* Every error has a detail field telling you what went wrong.
+This removes users from the front of the queue, marks them as admitted, and automatically sends each one an email with their ticket ID and a 10-minute window to complete their action.
 
-Demo walkthrough
-bashBASE=http://localhost:8000
-SECRET="stripe_hackathon_2026"
+---
 
-# create an event
-curl -s -X POST $BASE/events \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Secret: $SECRET" \
-  -d '{"event_name":"demo-drop","admission_window_seconds":120}' | jq
+## Email Notifications
 
-# join as 3 users
-curl -s -X POST $BASE/queue/join \
-  -H "Content-Type: application/json" \
-  -d '{"user_identifier":"alice","event_name":"demo-drop","email":"alice@example.com"}' | jq
+When a user is admitted, Mailjet sends them an email:
 
-curl -s -X POST $BASE/queue/join \
-  -H "Content-Type: application/json" \
-  -d '{"user_identifier":"bob","event_name":"demo-drop","email":"bob@example.com"}' | jq
+- **Subject:** `You're in! Access granted for {event_name}`
+- **Includes:** Their ticket ID, the event name, and a reminder that they have **10 minutes** to complete their purchase before their spot expires.
 
-curl -s -X POST $BASE/queue/join \
-  -H "Content-Type: application/json" \
-  -d '{"user_identifier":"carol","event_name":"demo-drop","email":"carol@example.com"}' | jq
+Email requires `MJ_API_KEY`, `MJ_SECRET_KEY`, and `SENDER_EMAIL` to be set. If they're missing, admission still works — the email will just silently fail and log an error.
 
-# pause the event then try to admit — should get a 409
-curl -s -X POST $BASE/events/demo-drop/pause \
-  -H "X-Admin-Secret: $SECRET" | jq
+---
 
-curl -s -X POST $BASE/queue/admit \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Secret: $SECRET" \
-  -d '{"event_name":"demo-drop","number_to_admit":1}' | jq
+## When Something Goes Wrong
 
-# resume and admit 2
-curl -s -X POST $BASE/events/demo-drop/resume \
-  -H "X-Admin-Secret: $SECRET" | jq
+Every error returns the same simple format:
 
-curl -s -X POST $BASE/queue/admit \
-  -H "Content-Type: application/json" \
-  -H "X-Admin-Secret: $SECRET" \
-  -d '{"event_name":"demo-drop","number_to_admit":2}' | jq
+```json
+{ "detail": "Explanation of what went wrong" }
+```
 
-# check alice — admitted with a countdown
-curl -s $BASE/queue/status/ALICES_TICKET_ID | jq
+| Code | What it means |
+|---|---|
+| `400` | You sent bad or missing data |
+| `401` | Wrong or missing `X-Admin-Secret` header |
+| `404` | Ticket or event not found |
+| `409` | An event with that name already exists |
+| `410` | Event is closed — no new entries accepted |
+| `503` | Queue is at max capacity, try again later |
 
-# wait 2 minutes, then expire stale spots
-curl -s -X POST "$BASE/queue/expire-stale?event_name=demo-drop" \
-  -H "X-Admin-Secret: $SECRET" | jq
+The `detail` message will always tell you specifically what to fix — not just the code.
 
-# alice is now expired — reason: admission_window_elapsed
-curl -s $BASE/queue/status/ALICES_TICKET_ID | jq
+---
 
-# pull stats
-curl -s "$BASE/events/demo-drop/stats" \
-  -H "X-Admin-Secret: $SECRET" | jq
+## All Endpoints
 
-# close the event — carol expires
-curl -s -X DELETE $BASE/events/demo-drop \
-  -H "X-Admin-Secret: $SECRET" | jq
+| Method | Path | Who |
+|---|---|---|
+| `GET` | `/` | Anyone |
+| `GET` | `/health` | Anyone |
+| `POST` | `/events` | Admin |
+| `GET` | `/events` | Admin |
+| `GET` | `/events/{event_name}` | Anyone |
+| `DELETE` | `/events/{event_name}` | Admin |
+| `POST` | `/queue/join` | User |
+| `GET` | `/queue/status/{ticket_id}` | User |
+| `POST` | `/queue/leave` | User |
+| `POST` | `/queue/admit` | Admin |
+| `GET` | `/queue/peek/{event_name}` | Admin |
 
-Why we built it this way
-* Admission window: when someone gets admitted, admission_expires_at is set and the status endpoint shows a live countdown. /queue/expire-stale handles cleanup. The API enforces what the email says — if we tell you that you have 2 minutes, we actually take your spot back after 2 minutes.
-deque not list: deque.popleft() is O(1). list.pop(0) shifts every element. It's one line but it's the difference between doing it right and doing it wrong.
-* Idempotent join: if a browser crashes and retries, the user doesn't get two spots. Same identifier, same ticket.
-* Pause vs close: pause is temporary, queue stays intact. Close is permanent, everyone waiting gets expired. We kept these as separate operations because they mean different things.
-* expire_reason: without it, every expired ticket looks the same. With it you can tell who left voluntarily, who ran out of time, and who got caught by an event closing.
-* Auth in headers: body fields get logged. Headers don't. X-Admin-Secret stays out of your access logs.
-Per-event admission windows — hardcoding 2 minutes globally doesn't work for every use case. You set it when you create the event.
+---
 
-What we'd build next
+## Notes
 
-* Rate limiting on /queue/join so bots can't flood the line
-* Auto-admit when a stale spot gets released, pull the next person in automatically
+- **In-memory only** — restarting the server clears all events and tickets. This is intentional for the hackathon.
+- **Admin routes** all require the `X-Admin-Secret` header.
+- **`event_name` is auto-slugified** — spaces and special characters are replaced with `-`.
+- **Optional `metadata` field** on `/queue/join` accepts any key-value pairs (e.g. locale, referral source).
