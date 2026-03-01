@@ -34,13 +34,13 @@ ADMIN_SECRET = os.getenv("QUEUE_ADMIN_SECRET", "stripe_hackathon_2026")
 SECONDS_PER_POSITION = int(os.getenv("SECONDS_PER_POSITION", "120"))
 MAX_QUEUE_CAPACITY = int(os.getenv("MAX_QUEUE_CAPACITY", "10000"))
 
-# --- Mailjet Config ---
-MJ_API_KEY = "0e22796462945ca30bb1d30c149c9dbd"
-MJ_SECRET_KEY = "f847341536111c27233d1283e8f79fc3"
-SENDER_EMAIL = "farzayb@gmail.com"  # must match your Mailjet signup email
+# mailjet config
+MJ_API_KEY = os.getenv("MJ_API_KEY", "")
+MJ_SECRET_KEY = os.getenv("MJ_SECRET_KEY", "")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL", "")
 
 
-# --- Email Helper ---
+# email helper
 def send_admission_email(to_email: str, user_name: str, event_name: str, ticket_id: str):
     try:
         mailjet = Client(auth=(MJ_API_KEY, MJ_SECRET_KEY), version='v3.1')
